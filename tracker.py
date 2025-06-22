@@ -19,12 +19,14 @@ from typing import Optional, Dict, Any
 # Import our existing modules
 from auth import token_manager, get_spotify_headers
 from tracker.spotify_api import SpotifyAPIClient
+from database import SpotifyDatabase
 
 class SpotifyTracker:
     """Continuous Spotify tracking with automatic token refresh."""
     
     def __init__(self):
         self.client = SpotifyAPIClient()
+        self.database = SpotifyDatabase()
         self.running = False
         self.last_track_id = None
         
@@ -113,6 +115,12 @@ class SpotifyTracker:
                 
                 import json
                 print(json.dumps(data_summary, indent=2))
+                
+                # Save to database
+                if self.database.save_track_data(comprehensive_data):
+                    print(f"💾 Saved to database")
+                else:
+                    print(f"❌ Failed to save to database")
             else:
                 print(f"[{timestamp}] ℹ️  No data available")
             
@@ -134,6 +142,13 @@ class SpotifyTracker:
         except Exception as e:
             print(f"❌ Connection test failed: {e}")
             return
+        
+        # Show database stats
+        try:
+            stats = self.database.get_listening_stats()
+            print(f"📊 Database stats: {stats['total_tracks']} tracks, {stats['unique_tracks']} unique, {stats['total_hours']} hours")
+        except Exception as e:
+            print(f"⚠️  Could not load database stats: {e}")
         
         self.running = True
         
