@@ -13,6 +13,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class TokenManager:
+    """Manages Spotify access token refresh using refresh token."""
+    
     def __init__(self):
         self.access_token = None
         self.refresh_token = os.getenv('SPOTIFY_REFRESH_TOKEN')
@@ -29,7 +31,7 @@ class TokenManager:
             raise ValueError("SPOTIFY_CLIENT_SECRET not found in environment variables")
     
     def refresh_access_token(self):
-        """Refresh the access token using the refresh token"""
+        """Refresh the access token using the refresh token."""
         try:
             url = "https://accounts.spotify.com/api/token"
             headers = {
@@ -64,7 +66,7 @@ class TokenManager:
             raise
     
     def get_access_token(self):
-        """Get a valid access token, refreshing if necessary"""
+        """Get a valid access token, refreshing if necessary."""
         current_time = datetime.now()
         
         # If no token or token is expired/expiring soon, refresh it
@@ -78,7 +80,7 @@ class TokenManager:
         return self.access_token
     
     def start_auto_refresh(self):
-        """Start automatic token refresh every 55 minutes"""
+        """Start automatic token refresh every 55 minutes."""
         logger.info("Starting automatic token refresh every 55 minutes")
         
         while True:
@@ -101,7 +103,7 @@ class TokenManager:
 token_manager = TokenManager()
 
 def get_spotify_headers():
-    """Get headers with current access token for Spotify API requests"""
+    """Get headers with current access token for Spotify API requests."""
     return {
         "Authorization": f"Bearer {token_manager.get_access_token()}",
         "Content-Type": "application/json"

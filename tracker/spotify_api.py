@@ -13,11 +13,7 @@ from auth import get_spotify_headers
 logger = logging.getLogger(__name__)
 
 class SpotifyAPIClient:
-    """
-    Spotify API Client for fetching user data and currently playing track.
-    
-    This class handles all interactions with the Spotify Web API.
-    """
+    """Spotify API Client for fetching user data and currently playing track."""
     
     def __init__(self):
         """Initialize the Spotify API client."""
@@ -25,14 +21,7 @@ class SpotifyAPIClient:
         self.headers = None  # Will be set when we make our first request
         
     def _get_headers(self):
-        """
-        Get fresh headers with current access token.
-        
-        TODO: This function should:
-        1. Call get_spotify_headers() from our auth module
-        2. Return the headers for API requests
-        3. Handle any authentication errors gracefully
-        """
+        """Get fresh headers with current access token."""
         try:
             return get_spotify_headers()
         except Exception as e:
@@ -42,17 +31,6 @@ class SpotifyAPIClient:
     def _make_request(self, endpoint: str, method: str = "GET") -> Optional[Dict[str, Any]]:
         """
         Make a request to the Spotify API.
-        
-        TODO: This function should:
-        1. Get fresh headers using _get_headers()
-        2. Make the HTTP request to the Spotify API
-        3. Handle different HTTP status codes:
-           - 200: Return the JSON response
-           - 401: Log authentication error
-           - 429: Handle rate limiting
-           - 404: Handle not found
-           - Other errors: Log and return None
-        4. Return the JSON response or None if error
         
         Args:
             endpoint: The API endpoint (e.g., "/me/player/currently-playing")
@@ -101,17 +79,7 @@ class SpotifyAPIClient:
             return None
     
     def get_currently_playing(self) -> Optional[Dict[str, Any]]:
-        """
-        Get the currently playing track from Spotify.
-        
-        TODO: This function should:
-        1. Call _make_request() with the currently-playing endpoint
-        2. Handle the case where nothing is currently playing
-        3. Return the track data or None if nothing is playing
-        
-        Returns:
-            Dictionary with track information or None if nothing is playing
-        """
+        """Get the currently playing track from Spotify."""
         endpoint = "/me/player/currently-playing"
         response = self._make_request(endpoint)
         
@@ -129,16 +97,7 @@ class SpotifyAPIClient:
         return response
     
     def get_user_profile(self) -> Optional[Dict[str, Any]]:
-        """
-        Get the current user's profile information.
-        
-        TODO: This function should:
-        1. Call _make_request() with the user profile endpoint
-        2. Return user profile data
-        
-        Returns:
-            Dictionary with user profile information
-        """
+        """Get the current user's profile information."""
         endpoint = "/me"
         response = self._make_request(endpoint)
         
@@ -148,17 +107,53 @@ class SpotifyAPIClient:
         
         logger.info("Successfully retrieved user profile")
         return response
+    
+    def get_comprehensive_track_data(self, track_data: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """
+        Get comprehensive track data from the currently-playing response.
+        
+        Args:
+            track_data: Raw response from currently-playing endpoint
+            
+        Returns:
+            Combined dictionary with all track data
+        """
+        if not track_data or 'item' not in track_data:
+            return None
+        
+        item = track_data['item']
+        track_id = item.get('id')
+        
+        if not track_id:
+            logger.error("No track ID found in response")
+            return None
+        
+        # Extract comprehensive track data
+        comprehensive_data = {
+            'timestamp': track_data.get('timestamp'),
+            'track_id': track_id,
+            'track_name': item.get('name'),
+            'primary_artist': item.get('artists', [{}])[0].get('name') if item.get('artists') else None,
+            'is_playing': track_data.get('is_playing', False),
+            'progress_ms': track_data.get('progress_ms', 0),
+            'duration_ms': item.get('duration_ms', 0),
+            'album_name': item.get('album', {}).get('name'),
+            'album_id': item.get('album', {}).get('id'),
+            'artists': [artist.get('name') for artist in item.get('artists', [])],
+            'external_urls': item.get('external_urls', {}),
+            'popularity': item.get('popularity'),
+            'explicit': item.get('explicit', False),
+            'track_number': item.get('track_number'),
+            'disc_number': item.get('disc_number'),
+            'release_date': item.get('album', {}).get('release_date'),
+            'album_type': item.get('album', {}).get('album_type'),
+            'available_markets': item.get('available_markets', [])
+        }
+        
+        return comprehensive_data
 
 def test_currently_playing():
-    """
-    Test function to check if we can get currently playing track.
-    
-    TODO: This function should:
-    1. Create a SpotifyAPIClient instance
-    2. Call get_currently_playing()
-    3. Print the result to console
-    4. Handle any errors gracefully
-    """
+    """Test function to check if we can get currently playing track."""
     try:
         print("🎵 Testing Spotify API Client...")
         

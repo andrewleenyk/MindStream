@@ -42,7 +42,10 @@ Thumbs.db
 # Logs
 *.log
 
-# Data files
-data/
-*.csv
-*.json
+# Data files (keep directory but ignore contents)
+data/*
+!data/.gitkeep
+
+# Temporary files
+*.tmp
+*.temp

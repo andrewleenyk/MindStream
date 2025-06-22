@@ -93,6 +93,29 @@ class SpotifyTracker:
             track_info = self._format_track_info(track_data)
             print(f"[{timestamp}] {track_info}")
             
+            # Get comprehensive track data
+            comprehensive_data = self.client.get_comprehensive_track_data(track_data)
+            
+            if comprehensive_data:
+                print(f"[{timestamp}] 📊 Track Data:")
+                # Show key data points
+                data_summary = {
+                    'timestamp': comprehensive_data.get('timestamp'),
+                    'track_id': comprehensive_data.get('track_id'),
+                    'track_name': comprehensive_data.get('track_name'),
+                    'primary_artist': comprehensive_data.get('primary_artist'),
+                    'is_playing': comprehensive_data.get('is_playing'),
+                    'progress_ms': comprehensive_data.get('progress_ms'),
+                    'duration_ms': comprehensive_data.get('duration_ms'),
+                    'album_name': comprehensive_data.get('album_name'),
+                    'popularity': comprehensive_data.get('popularity')
+                }
+                
+                import json
+                print(json.dumps(data_summary, indent=2))
+            else:
+                print(f"[{timestamp}] ℹ️  No data available")
+            
             self.last_track_id = current_track_id
     
     def start_tracking(self):
