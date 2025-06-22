@@ -15,18 +15,18 @@ logger = logging.getLogger(__name__)
 class TokenManager:
     def __init__(self):
         self.access_token = None
-        self.refresh_token = os.getenv('REFRESH_TOKEN')
-        self.client_id = os.getenv('CLIENT_ID')
-        self.client_secret = os.getenv('CLIENT_SECRET')
+        self.refresh_token = os.getenv('SPOTIFY_REFRESH_TOKEN')
+        self.client_id = os.getenv('SPOTIFY_CLIENT_ID')
+        self.client_secret = os.getenv('SPOTIFY_CLIENT_SECRET')
         self.token_expiry = None
         self.refresh_interval = 55 * 60  # 55 minutes in seconds
         
         if not self.refresh_token:
-            raise ValueError("REFRESH_TOKEN not found in environment variables")
+            raise ValueError("SPOTIFY_REFRESH_TOKEN not found in environment variables")
         if not self.client_id:
-            raise ValueError("CLIENT_ID not found in environment variables")
+            raise ValueError("SPOTIFY_CLIENT_ID not found in environment variables")
         if not self.client_secret:
-            raise ValueError("CLIENT_SECRET not found in environment variables")
+            raise ValueError("SPOTIFY_CLIENT_SECRET not found in environment variables")
     
     def refresh_access_token(self):
         """Refresh the access token using the refresh token"""
