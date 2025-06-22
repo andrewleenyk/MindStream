@@ -19,14 +19,14 @@ from typing import Optional, Dict, Any
 # Import our existing modules
 from auth import token_manager, get_spotify_headers
 from tracker.spotify_api import SpotifyAPIClient
-from database import SpotifyDatabase
+from supabase_database import SupabaseDatabase
 
 class SpotifyTracker:
     """Continuous Spotify tracking with automatic token refresh."""
     
     def __init__(self):
         self.client = SpotifyAPIClient()
-        self.database = SpotifyDatabase()
+        self.database = SupabaseDatabase()
         self.running = False
         self.last_track_id = None
         
