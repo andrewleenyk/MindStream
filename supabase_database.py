@@ -56,8 +56,9 @@ class SupabaseDatabase:
                         timestamp, track_id, track_name, primary_artist, artists,
                         is_playing, progress_ms, duration_ms, album_name, album_id,
                         popularity, explicit, track_number, disc_number, release_date, album_type,
-                        tempo, beat_strength, rhythmic_stability, regularity, valence, key, mode
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        tempo, beat_strength, rhythmic_stability, regularity, valence, key, mode,
+                        energy, loudness, instrumentalness, acousticness, speechiness, danceability
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ''', (
                     track_data.get('timestamp'),
                     track_data.get('track_id'),
@@ -81,7 +82,13 @@ class SupabaseDatabase:
                     track_data.get('regularity'),
                     track_data.get('valence'),
                     track_data.get('key'),
-                    track_data.get('mode')
+                    track_data.get('mode'),
+                    track_data.get('energy'),
+                    track_data.get('loudness'),
+                    track_data.get('instrumentalness'),
+                    track_data.get('acousticness'),
+                    track_data.get('speechiness'),
+                    track_data.get('danceability')
                 ))
                 
                 logger.info(f"Saved track data for {track_data.get('track_name')}")
@@ -110,7 +117,8 @@ class SupabaseDatabase:
                 cur.execute('''
                     UPDATE tracks 
                     SET tempo = %s, beat_strength = %s, rhythmic_stability = %s, 
-                        regularity = %s, valence = %s, key = %s, mode = %s
+                        regularity = %s, valence = %s, key = %s, mode = %s,
+                        energy = %s, loudness = %s, instrumentalness = %s, acousticness = %s, speechiness = %s, danceability = %s
                     WHERE track_id = %s
                 ''', (
                     audio_features.get('tempo'),
@@ -120,6 +128,12 @@ class SupabaseDatabase:
                     audio_features.get('valence'),
                     audio_features.get('key'),
                     audio_features.get('mode'),
+                    audio_features.get('energy'),
+                    audio_features.get('loudness'),
+                    audio_features.get('instrumentalness'),
+                    audio_features.get('acousticness'),
+                    audio_features.get('speechiness'),
+                    audio_features.get('danceability'),
                     track_id
                 ))
                 

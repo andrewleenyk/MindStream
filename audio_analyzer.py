@@ -171,29 +171,54 @@ class AudioAnalyzer:
             key = key_names[key_raw] if key_raw < len(key_names) else 'Unknown'
             mode = mode_names[mode_raw] if mode_raw < len(mode_names) else 'Unknown'
             
-            # Compile features
+            # Compute energy (mean RMS)
+            rms = librosa.feature.rms(y=y)[0]
+            energy = float(np.mean(rms))
+
+            # Compute loudness (in dB)
+            loudness = float(np.mean(librosa.amplitude_to_db(rms, ref=np.max)))
+
+            # Instrumentalness (heuristic: low MFCC variation and low zero-crossing rate)
+            mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
+            mfcc_var = np.mean(np.var(mfcc, axis=1))
+            zcr = np.mean(librosa.feature.zero_crossing_rate(y))
+            instrumentalness = float(np.clip(1.0 - (mfcc_var + zcr), 0.0, 1.0))
+
+            # Acousticness (heuristic: low spectral centroid and rolloff)
+            spectral_centroids = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
+            spectral_rolloff = librosa.feature.spectral_rolloff(y=y, sr=sr)[0]
+            acousticness = float(np.clip(1.0 - (np.mean(spectral_centroids) / (np.mean(spectral_rolloff) + 1e-6)), 0.0, 1.0))
+
+            # Speechiness (heuristic: high MFCC variation and high zero-crossing rate)
+            speechiness = float(np.clip((mfcc_var + zcr) / 2.0, 0.0, 1.0))
+
+            # Danceability (heuristic: combine tempo, beat strength, and regularity)
+            danceability = float(np.clip((tempo / 200.0 + beat_strength + regularity) / 3.0, 0.0, 1.0))
+
+            # Compile features, rounded to 2 decimal places
             features = {
-                'tempo': float(tempo),
-                'beat_strength': float(beat_strength),
-                'rhythmic_stability': float(rhythmic_stability),
-                'regularity': float(regularity),
-                'valence': float(valence),
+                'tempo': round(float(tempo), 2),
+                'beat_strength': round(float(beat_strength), 2),
+                'rhythmic_stability': round(float(rhythmic_stability), 2),
+                'regularity': round(float(regularity), 2),
+                'valence': round(float(valence), 2),
                 'key': key,
-                'mode': mode
+                'mode': mode,
+                'energy': round(energy, 2),
+                'loudness': round(loudness, 2),
+                'instrumentalness': round(instrumentalness, 2),
+                'acousticness': round(acousticness, 2),
+                'speechiness': round(speechiness, 2),
+                'danceability': round(danceability, 2)
             }
             
             logger.info(f"Audio analysis completed: {features}")
             
             # Console output for debugging
             print(f"\n🎵 AUDIO ANALYSIS RESULTS:")
-            print(f"   Tempo: {features['tempo']:.1f} BPM")
-            print(f"   Beat Strength: {features['beat_strength']:.3f}")
-            print(f"   Rhythmic Stability: {features['rhythmic_stability']:.3f}")
-            print(f"   Regularity: {features['regularity']:.3f}")
-            print(f"   Valence: {features['valence']:.3f}")
-            print(f"   Key: {features['key']} {features['mode']}")
-            print(f"   File: {audio_file_path}")
-            print()
+            for k, v in features.items():
+                print(f"   {k}: {v}")
+            print(f"   File: {audio_file_path}\n")
             
             return features
             
