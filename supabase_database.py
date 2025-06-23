@@ -40,7 +40,7 @@ class SupabaseDatabase:
         Save track data to the Supabase database.
         
         Args:
-            track_data: Dictionary containing track information
+            track_data: Dictionary containing track information and optional audio analysis
             
         Returns:
             True if saved successfully, False otherwise
@@ -55,8 +55,9 @@ class SupabaseDatabase:
                     INSERT INTO tracks (
                         timestamp, track_id, track_name, primary_artist, artists,
                         is_playing, progress_ms, duration_ms, album_name, album_id,
-                        popularity, explicit, track_number, disc_number, release_date, album_type
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        popularity, explicit, track_number, disc_number, release_date, album_type,
+                        tempo, beat_strength, rhythmic_stability, regularity, valence, key, mode
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ''', (
                     track_data.get('timestamp'),
                     track_data.get('track_id'),
@@ -73,7 +74,14 @@ class SupabaseDatabase:
                     track_data.get('track_number'),
                     track_data.get('disc_number'),
                     track_data.get('release_date'),
-                    track_data.get('album_type')
+                    track_data.get('album_type'),
+                    track_data.get('tempo'),
+                    track_data.get('beat_strength'),
+                    track_data.get('rhythmic_stability'),
+                    track_data.get('regularity'),
+                    track_data.get('valence'),
+                    track_data.get('key'),
+                    track_data.get('mode')
                 ))
                 
                 logger.info(f"Saved track data for {track_data.get('track_name')}")
@@ -81,6 +89,49 @@ class SupabaseDatabase:
                 
         except Exception as e:
             logger.error(f"Failed to save track data: {e}")
+            return False
+    
+    def update_track_audio_analysis(self, track_id: str, audio_features: Dict[str, Any]) -> bool:
+        """
+        Update an existing track record with audio analysis data.
+        
+        Args:
+            track_id: Spotify track ID
+            audio_features: Dictionary containing audio analysis features
+            
+        Returns:
+            True if updated successfully, False otherwise
+        """
+        try:
+            if not self.conn or self.conn.closed:
+                self.connect()
+            
+            with self.conn.cursor() as cur:
+                cur.execute('''
+                    UPDATE tracks 
+                    SET tempo = %s, beat_strength = %s, rhythmic_stability = %s, 
+                        regularity = %s, valence = %s, key = %s, mode = %s
+                    WHERE track_id = %s
+                ''', (
+                    audio_features.get('tempo'),
+                    audio_features.get('beat_strength'),
+                    audio_features.get('rhythmic_stability'),
+                    audio_features.get('regularity'),
+                    audio_features.get('valence'),
+                    audio_features.get('key'),
+                    audio_features.get('mode'),
+                    track_id
+                ))
+                
+                if cur.rowcount > 0:
+                    logger.info(f"Updated audio analysis for track {track_id}")
+                    return True
+                else:
+                    logger.warning(f"No track found with ID {track_id} to update")
+                    return False
+                
+        except Exception as e:
+            logger.error(f"Failed to update audio analysis: {e}")
             return False
     
     def get_recent_tracks(self, limit: int = 10) -> list:

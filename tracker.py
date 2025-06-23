@@ -7,6 +7,7 @@ A single Python script that:
 - Polls /me/player/currently-playing every 5 seconds
 - Uses latest valid token for all API calls
 - Logs track info to console
+- Downloads and analyzes audio features for new tracks
 """
 
 import time
@@ -20,15 +21,18 @@ from typing import Optional, Dict, Any
 from auth import token_manager, get_spotify_headers
 from tracker.spotify_api import SpotifyAPIClient
 from supabase_database import SupabaseDatabase
+from audio_analyzer import AudioAnalyzer
 
 class SpotifyTracker:
-    """Continuous Spotify tracking with automatic token refresh."""
+    """Continuous Spotify tracking with automatic token refresh and audio analysis."""
     
     def __init__(self):
         self.client = SpotifyAPIClient()
         self.database = SupabaseDatabase()
+        self.audio_analyzer = AudioAnalyzer()
         self.running = False
         self.last_track_id = None
+        self.analyzed_tracks = set()  # Track which songs we've already analyzed
         
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -119,6 +123,50 @@ class SpotifyTracker:
                 # Save to database
                 if self.database.save_track_data(comprehensive_data):
                     print(f"💾 Saved to database")
+                    
+                    # Perform audio analysis for new tracks
+                    if (current_track_id and 
+                        current_track_id not in self.analyzed_tracks and
+                        comprehensive_data.get('track_name') and 
+                        comprehensive_data.get('primary_artist')):
+                        
+                        print(f"[{timestamp}] 🎵 Starting audio analysis...")
+                        
+                        # Run audio analysis in a separate thread to avoid blocking
+                        def analyze_audio():
+                            try:
+                                track_name = comprehensive_data.get('track_name')
+                                artist_name = comprehensive_data.get('primary_artist')
+                                
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] 🎵 Analyzing: {track_name} by {artist_name}")
+                                
+                                # Download and analyze the track
+                                audio_features = self.audio_analyzer.analyze_track(track_name, artist_name)
+                                
+                                if audio_features:
+                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Audio analysis completed:")
+                                    for key, value in audio_features.items():
+                                        print(f"    {key}: {value}")
+                                    
+                                    # Update the database with audio features
+                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] 💾 Updating database for track: {current_track_id}")
+                                    if self.database.update_track_audio_analysis(current_track_id, audio_features):
+                                        print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Audio features saved to database successfully!")
+                                        self.analyzed_tracks.add(current_track_id)
+                                    else:
+                                        print(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Failed to save audio features to database")
+                                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Track ID: {current_track_id}")
+                                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Features: {audio_features}")
+                                else:
+                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Audio analysis failed")
+                                    
+                            except Exception as e:
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Audio analysis error: {e}")
+                        
+                        # Start audio analysis in background thread
+                        analysis_thread = threading.Thread(target=analyze_audio, daemon=True)
+                        analysis_thread.start()
+                        
                 else:
                     print(f"❌ Failed to save to database")
             else:
