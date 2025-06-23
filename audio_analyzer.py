@@ -7,16 +7,33 @@ from typing import Dict, Any, Optional
 import numpy as np
 import uuid
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
+import hashlib
 
 logger = logging.getLogger(__name__)
 
 class AudioAnalyzer:
-    """Downloads tracks and analyzes audio features using librosa."""
+    """Downloads tracks and analyzes audio features using librosa with thread pooling and retries."""
     
-    def __init__(self, base_download_dir: str = "temp_audio"):
-        """Initialize the audio analyzer."""
+    def __init__(self, base_download_dir: str = "temp_audio", max_concurrent: int = 2, max_retries: int = 3):
+        """Initialize the audio analyzer with thread pooling and retry settings."""
         self.base_download_dir = base_download_dir
+        self.max_concurrent = max_concurrent
+        self.max_retries = max_retries
+        self.analyzed_cache = set()  # Track analyzed tracks
+        self.cache_lock = Lock()  # Thread-safe cache access
         self.ensure_base_download_dir()
+        
+        # Thread pool for concurrent analysis
+        self.executor = ThreadPoolExecutor(max_workers=max_concurrent)
+        
+        logger.info(f"AudioAnalyzer initialized with max_concurrent={max_concurrent}, max_retries={max_retries}")
+    
+    def __del__(self):
+        """Cleanup thread pool on deletion."""
+        if hasattr(self, 'executor'):
+            self.executor.shutdown(wait=True)
     
     def ensure_base_download_dir(self):
         """Create base download directory if it doesn't exist."""
@@ -32,9 +49,32 @@ class AudioAnalyzer:
         logger.info(f"Created unique download directory: {download_dir}")
         return download_dir
     
+    def get_track_hash(self, track_name: str, artist_name: str) -> str:
+        """Create a hash for the track to use as cache key."""
+        track_string = f"{track_name.lower()}_{artist_name.lower()}"
+        return hashlib.md5(track_string.encode()).hexdigest()[:8]
+    
+    def is_track_analyzed(self, track_name: str, artist_name: str) -> bool:
+        """Check if a track has already been analyzed (thread-safe)."""
+        track_hash = self.get_track_hash(track_name, artist_name)
+        with self.cache_lock:
+            return track_hash in self.analyzed_cache
+    
+    def mark_track_analyzed(self, track_name: str, artist_name: str):
+        """Mark a track as analyzed (thread-safe)."""
+        track_hash = self.get_track_hash(track_name, artist_name)
+        with self.cache_lock:
+            self.analyzed_cache.add(track_hash)
+    
+    def clear_cache(self):
+        """Clear the analysis cache."""
+        with self.cache_lock:
+            self.analyzed_cache.clear()
+        logger.info("Analysis cache cleared")
+    
     def search_and_download(self, track_name: str, artist_name: str) -> Optional[str]:
         """
-        Search for a track on YouTube and download it as MP3.
+        Search for a track on YouTube and download it as MP3 with retries.
         
         Args:
             track_name: Name of the track
@@ -43,67 +83,80 @@ class AudioAnalyzer:
         Returns:
             Path to downloaded MP3 file or None if failed
         """
-        try:
-            # Create a unique directory for this analysis
-            download_dir = self.create_unique_download_dir()
-            
-            # Create search query
-            search_query = f"{track_name} {artist_name} audio"
-            
-            # Configure yt-dlp options
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }],
-                'outtmpl': os.path.join(download_dir, '%(title)s.%(ext)s'),
-                'quiet': False,  # Enable output for debugging
-                'no_warnings': False,  # Show warnings
-                'extract_flat': False,
-            }
-            
-            logger.info(f"Searching for: {search_query}")
-            logger.info(f"Download directory: {download_dir}")
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                # Search for the video
-                search_results = ydl.extract_info(f"ytsearch1:{search_query}", download=False)
+        for attempt in range(self.max_retries):
+            try:
+                # Create a unique directory for this analysis
+                download_dir = self.create_unique_download_dir()
                 
-                if not search_results.get('entries'):
-                    logger.warning(f"No results found for: {search_query}")
-                    return None
+                # Create search query
+                search_query = f"{track_name} {artist_name} audio"
                 
-                # Get the first result
-                video_info = search_results['entries'][0]
-                video_url = video_info['url']
+                # Configure yt-dlp options
+                ydl_opts = {
+                    'format': 'bestaudio/best',
+                    'postprocessors': [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': 'mp3',
+                        'preferredquality': '192',
+                    }],
+                    'outtmpl': os.path.join(download_dir, '%(title)s.%(ext)s'),
+                    'quiet': False,  # Enable output for debugging
+                    'no_warnings': False,  # Show warnings
+                    'extract_flat': False,
+                }
                 
-                # Download the audio
-                logger.info(f"Downloading: {video_info.get('title', 'Unknown')}")
-                ydl.download([video_url])
+                logger.info(f"Searching for: {search_query} (attempt {attempt + 1}/{self.max_retries})")
+                logger.info(f"Download directory: {download_dir}")
                 
-                # Small delay to ensure audio conversion is complete
-                time.sleep(2)
-                
-                # Find the downloaded file - look for any .mp3 file in the directory
-                mp3_files = [f for f in os.listdir(download_dir) if f.endswith('.mp3')]
-                
-                if mp3_files:
-                    # Use the first .mp3 file found
-                    file_path = os.path.join(download_dir, mp3_files[0])
-                    logger.info(f"Successfully downloaded: {file_path}")
-                    return file_path
-                else:
-                    logger.error(f"No MP3 files found in directory: {download_dir}")
-                    # List what files are actually there for debugging
-                    all_files = os.listdir(download_dir)
-                    logger.error(f"Files in directory: {all_files}")
-                    return None
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    # Search for the video
+                    search_results = ydl.extract_info(f"ytsearch1:{search_query}", download=False)
                     
-        except Exception as e:
-            logger.error(f"Failed to download track: {e}")
-            return None
+                    if not search_results.get('entries'):
+                        logger.warning(f"No results found for: {search_query}")
+                        if attempt < self.max_retries - 1:
+                            time.sleep(2 ** attempt)  # Exponential backoff
+                            continue
+                        return None
+                    
+                    # Get the first result
+                    video_info = search_results['entries'][0]
+                    video_url = video_info['url']
+                    
+                    # Download the audio
+                    logger.info(f"Downloading: {video_info.get('title', 'Unknown')}")
+                    ydl.download([video_url])
+                    
+                    # Small delay to ensure audio conversion is complete
+                    time.sleep(2)
+                    
+                    # Find the downloaded file - look for any .mp3 file in the directory
+                    mp3_files = [f for f in os.listdir(download_dir) if f.endswith('.mp3')]
+                    
+                    if mp3_files:
+                        # Use the first .mp3 file found
+                        file_path = os.path.join(download_dir, mp3_files[0])
+                        logger.info(f"Successfully downloaded: {file_path}")
+                        return file_path
+                    else:
+                        logger.error(f"No MP3 files found in directory: {download_dir}")
+                        # List what files are actually there for debugging
+                        all_files = os.listdir(download_dir)
+                        logger.error(f"Files in directory: {all_files}")
+                        
+                        if attempt < self.max_retries - 1:
+                            time.sleep(2 ** attempt)  # Exponential backoff
+                            continue
+                        return None
+                        
+            except Exception as e:
+                logger.error(f"Failed to download track (attempt {attempt + 1}/{self.max_retries}): {e}")
+                if attempt < self.max_retries - 1:
+                    time.sleep(2 ** attempt)  # Exponential backoff
+                    continue
+                return None
+        
+        return None
     
     def analyze_audio_features(self, audio_file_path: str) -> Optional[Dict[str, Any]]:
         """
@@ -242,9 +295,9 @@ class AudioAnalyzer:
         except Exception as e:
             logger.error(f"Failed to cleanup audio file: {e}")
     
-    def analyze_track(self, track_name: str, artist_name: str) -> Optional[Dict[str, Any]]:
+    def analyze_track_with_retries(self, track_name: str, artist_name: str) -> Optional[Dict[str, Any]]:
         """
-        Complete workflow: download track and analyze audio features.
+        Analyze a track with retry mechanism.
         
         Args:
             track_name: Name of the track
@@ -254,20 +307,121 @@ class AudioAnalyzer:
             Dictionary with audio features or None if failed
         """
         audio_file_path = None
-        try:
-            # Download the track
-            audio_file_path = self.search_and_download(track_name, artist_name)
-            if not audio_file_path:
+        for attempt in range(self.max_retries):
+            try:
+                # Download the track
+                audio_file_path = self.search_and_download(track_name, artist_name)
+                if not audio_file_path:
+                    if attempt < self.max_retries - 1:
+                        logger.info(f"Retrying analysis for {track_name} by {artist_name} (attempt {attempt + 2})")
+                        time.sleep(2 ** attempt)  # Exponential backoff
+                        continue
+                    return None
+                
+                # Analyze the audio
+                features = self.analyze_audio_features(audio_file_path)
+                print(f"[DEBUG] analyze_track_with_retries: features = {features is not None}")
+                if features:
+                    print(f"[DEBUG] analyze_track_with_retries: features keys = {list(features.keys())}")
+                    # Mark as analyzed in cache
+                    self.mark_track_analyzed(track_name, artist_name)
+                    return features
+                else:
+                    print(f"[DEBUG] analyze_track_with_retries: no features returned")
+                    if attempt < self.max_retries - 1:
+                        logger.info(f"Retrying analysis for {track_name} by {artist_name} (attempt {attempt + 2})")
+                        time.sleep(2 ** attempt)  # Exponential backoff
+                        continue
+                    return None
+                    
+            except Exception as e:
+                logger.error(f"Analysis failed (attempt {attempt + 1}/{self.max_retries}): {e}")
+                if attempt < self.max_retries - 1:
+                    time.sleep(2 ** attempt)  # Exponential backoff
+                    continue
                 return None
+            finally:
+                # Clean up the downloaded file
+                if audio_file_path:
+                    self.cleanup_audio_file(audio_file_path)
+        
+        return None
+    
+    def submit_analysis_task(self, track_name: str, artist_name: str, track_id: str, status_callback=None):
+        """
+        Submit an analysis task to the thread pool.
+        
+        Args:
+            track_name: Name of the track
+            artist_name: Name of the artist
+            track_id: Spotify track ID for status updates
+            status_callback: Optional callback function to update analysis status
             
-            # Analyze the audio
-            features = self.analyze_audio_features(audio_file_path)
-            return features
+        Returns:
+            Future object for the analysis task
+        """
+        # Check cache first
+        if self.is_track_analyzed(track_name, artist_name):
+            logger.info(f"Track {track_name} by {artist_name} already analyzed, skipping")
+            if status_callback:
+                status_callback(track_id, 'completed')
+            return None
+        
+        # Submit to thread pool
+        future = self.executor.submit(self._analyze_track_task, track_name, artist_name, track_id, status_callback)
+        logger.info(f"Submitted analysis task for {track_name} by {artist_name}")
+        return future
+    
+    def _analyze_track_task(self, track_name: str, artist_name: str, track_id: str, status_callback=None):
+        """
+        Internal method to run analysis task with status updates.
+        
+        Args:
+            track_name: Name of the track
+            artist_name: Name of the artist
+            track_id: Spotify track ID for status updates
+            status_callback: Optional callback function to update analysis status
+        """
+        try:
+            # Update status to in_progress
+            if status_callback:
+                status_callback(track_id, 'in_progress')
             
-        finally:
-            # Clean up the downloaded file
-            if audio_file_path:
-                self.cleanup_audio_file(audio_file_path)
+            # Perform analysis with retries (this handles its own file cleanup)
+            features = self.analyze_track_with_retries(track_name, artist_name)
+            print(f"[DEBUG] _analyze_track_task: features = {features is not None}")
+            
+            if features:
+                print(f"[DEBUG] _analyze_track_task: features keys = {list(features.keys())}")
+                # Update status to completed
+                if status_callback:
+                    status_callback(track_id, 'completed')
+                logger.info(f"Analysis completed successfully for {track_name} by {artist_name}")
+                return features
+            else:
+                print(f"[DEBUG] _analyze_track_task: no features returned")
+                # Update status to failed
+                if status_callback:
+                    status_callback(track_id, 'failed')
+                logger.error(f"Analysis failed for {track_name} by {artist_name}")
+                return None
+                
+        except Exception as e:
+            # Update status to failed
+            if status_callback:
+                status_callback(track_id, 'failed')
+            logger.error(f"Analysis task failed for {track_name} by {artist_name}: {e}")
+            return None
+    
+    def get_active_tasks_count(self) -> int:
+        """Get the number of active analysis tasks."""
+        return len([f for f in self.executor._threads if f.is_alive()])
+    
+    def wait_for_completion(self, timeout: int = 300):
+        """Wait for all pending tasks to complete."""
+        logger.info(f"Waiting for {self.get_active_tasks_count()} tasks to complete...")
+        self.executor.shutdown(wait=True, timeout=timeout)
+        logger.info("All analysis tasks completed")
 
 if __name__ == "__main__":
     # Test the audio analyzer
@@ -278,7 +432,7 @@ if __name__ == "__main__":
     test_artist = "Queen"
     
     print(f"Testing audio analysis for: {test_track} by {test_artist}")
-    features = analyzer.analyze_track(test_track, test_artist)
+    features = analyzer.analyze_track_with_retries(test_track, test_artist)
     
     if features:
         print("✅ Audio analysis successful!")

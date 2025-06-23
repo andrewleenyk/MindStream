@@ -24,15 +24,15 @@ from supabase_database import SupabaseDatabase
 from audio_analyzer import AudioAnalyzer
 
 class SpotifyTracker:
-    """Continuous Spotify tracking with automatic token refresh and audio analysis."""
+    """Continuous Spotify tracking with automatic token refresh and enhanced audio analysis."""
     
     def __init__(self):
         self.client = SpotifyAPIClient()
         self.database = SupabaseDatabase()
-        self.audio_analyzer = AudioAnalyzer()
+        self.audio_analyzer = AudioAnalyzer(max_concurrent=2, max_retries=3)
         self.running = False
         self.last_track_id = None
-        self.analyzed_tracks = set()  # Track which songs we've already analyzed
+        self.analysis_futures = {}  # Track analysis futures
         
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -42,6 +42,8 @@ class SpotifyTracker:
         """Handle shutdown signals gracefully."""
         print(f"\n🛑 Received signal {signum}, shutting down gracefully...")
         self.running = False
+        # Wait for analysis tasks to complete
+        self.audio_analyzer.wait_for_completion(timeout=30)
     
     def _token_refresh_worker(self):
         """Background worker to refresh tokens every 55 minutes."""
@@ -126,46 +128,29 @@ class SpotifyTracker:
                     
                     # Perform audio analysis for new tracks
                     if (current_track_id and 
-                        current_track_id not in self.analyzed_tracks and
+                        current_track_id not in self.analysis_futures and
                         comprehensive_data.get('track_name') and 
                         comprehensive_data.get('primary_artist')):
                         
                         print(f"[{timestamp}] 🎵 Starting audio analysis...")
                         
-                        # Run audio analysis in a separate thread to avoid blocking
-                        def analyze_audio():
-                            try:
-                                track_name = comprehensive_data.get('track_name')
-                                artist_name = comprehensive_data.get('primary_artist')
-                                
-                                print(f"[{datetime.now().strftime('%H:%M:%S')}] 🎵 Analyzing: {track_name} by {artist_name}")
-                                
-                                # Download and analyze the track
-                                audio_features = self.audio_analyzer.analyze_track(track_name, artist_name)
-                                
-                                if audio_features:
-                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Audio analysis completed:")
-                                    for key, value in audio_features.items():
-                                        print(f"    {key}: {value}")
-                                    
-                                    # Update the database with audio features
-                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] 💾 Updating database for track: {current_track_id}")
-                                    if self.database.update_track_audio_analysis(current_track_id, audio_features):
-                                        print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Audio features saved to database successfully!")
-                                        self.analyzed_tracks.add(current_track_id)
-                                    else:
-                                        print(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Failed to save audio features to database")
-                                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Track ID: {current_track_id}")
-                                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Features: {audio_features}")
-                                else:
-                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Audio analysis failed")
-                                    
-                            except Exception as e:
-                                print(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Audio analysis error: {e}")
+                        # Submit analysis task to thread pool
+                        track_name = comprehensive_data.get('track_name')
+                        artist_name = comprehensive_data.get('primary_artist')
                         
-                        # Start audio analysis in background thread
-                        analysis_thread = threading.Thread(target=analyze_audio, daemon=True)
-                        analysis_thread.start()
+                        future = self.audio_analyzer.submit_analysis_task(
+                            track_name, 
+                            artist_name, 
+                            current_track_id,
+                            self._update_analysis_status
+                        )
+                        
+                        if future:
+                            # Track the future for cleanup
+                            self.analysis_futures[current_track_id] = future
+                            print(f"[{timestamp}] 📊 Analysis task submitted (active tasks: {self.audio_analyzer.get_active_tasks_count()})")
+                        else:
+                            print(f"[{timestamp}] ℹ️  Track already analyzed or analysis skipped")
                         
                 else:
                     print(f"❌ Failed to save to database")
@@ -173,6 +158,46 @@ class SpotifyTracker:
                 print(f"[{timestamp}] ℹ️  No data available")
             
             self.last_track_id = current_track_id
+            
+            # Clean up completed futures
+            self._cleanup_completed_futures()
+    
+    def _update_analysis_status(self, track_id: str, status: str):
+        """Callback to update analysis status in database."""
+        try:
+            self.database.update_analysis_status(track_id, status)
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Analysis status: {track_id} -> {status}")
+        except Exception as e:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Failed to update status: {e}")
+    
+    def _cleanup_completed_futures(self):
+        """Clean up completed analysis futures and update database with results."""
+        completed_futures = []
+        
+        for track_id, future in self.analysis_futures.items():
+            if future and future.done():
+                try:
+                    features = future.result(timeout=1)
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔍 Future result for {track_id}: {features is not None}")
+                    
+                    if features:
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Features extracted: {list(features.keys())}")
+                        # Update database with audio features
+                        if self.database.update_track_audio_analysis(track_id, features):
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Audio features saved to database for {track_id}")
+                        else:
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Failed to save audio features for {track_id}")
+                    else:
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️  No features returned for {track_id}")
+                        
+                except Exception as e:
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Analysis future error for {track_id}: {e}")
+                
+                completed_futures.append(track_id)
+        
+        # Remove completed futures
+        for track_id in completed_futures:
+            del self.analysis_futures[track_id]
     
     def start_tracking(self):
         """Start the continuous tracking process."""

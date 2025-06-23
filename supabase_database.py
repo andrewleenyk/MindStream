@@ -57,8 +57,9 @@ class SupabaseDatabase:
                         is_playing, progress_ms, duration_ms, album_name, album_id,
                         popularity, explicit, track_number, disc_number, release_date, album_type,
                         tempo, beat_strength, rhythmic_stability, regularity, valence, key, mode,
-                        energy, loudness, instrumentalness, acousticness, speechiness, danceability
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        energy, loudness, instrumentalness, acousticness, speechiness, danceability,
+                        analysis_status
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ''', (
                     track_data.get('timestamp'),
                     track_data.get('track_id'),
@@ -88,7 +89,8 @@ class SupabaseDatabase:
                     track_data.get('instrumentalness'),
                     track_data.get('acousticness'),
                     track_data.get('speechiness'),
-                    track_data.get('danceability')
+                    track_data.get('danceability'),
+                    track_data.get('analysis_status', 'pending')  # Default to pending
                 ))
                 
                 logger.info(f"Saved track data for {track_data.get('track_name')}")
@@ -242,6 +244,75 @@ class SupabaseDatabase:
         except Exception as e:
             logger.error(f"Failed to get listening stats: {e}")
             return {}
+    
+    def update_analysis_status(self, track_id: str, status: str) -> bool:
+        """
+        Update the analysis status for a track.
+        
+        Args:
+            track_id: Spotify track ID
+            status: Status string ('pending', 'in_progress', 'completed', 'failed')
+            
+        Returns:
+            True if updated successfully, False otherwise
+        """
+        try:
+            if not self.conn or self.conn.closed:
+                self.connect()
+            
+            with self.conn.cursor() as cur:
+                cur.execute('''
+                    UPDATE tracks 
+                    SET analysis_status = %s
+                    WHERE track_id = %s
+                ''', (status, track_id))
+                
+                if cur.rowcount > 0:
+                    logger.info(f"Updated analysis status to '{status}' for track {track_id}")
+                    return True
+                else:
+                    logger.warning(f"No track found with ID {track_id} to update status")
+                    return False
+                
+        except Exception as e:
+            logger.error(f"Failed to update analysis status: {e}")
+            return False
+    
+    def get_tracks_needing_analysis(self, limit: int = 10) -> list:
+        """
+        Get tracks that need audio analysis (pending or failed status).
+        
+        Args:
+            limit: Maximum number of tracks to return
+            
+        Returns:
+            List of track dictionaries
+        """
+        try:
+            if not self.conn or self.conn.closed:
+                self.connect()
+            
+            with self.conn.cursor() as cur:
+                cur.execute('''
+                    SELECT track_id, track_name, primary_artist, analysis_status
+                    FROM tracks 
+                    WHERE analysis_status IN ('pending', 'failed')
+                    ORDER BY timestamp DESC 
+                    LIMIT %s
+                ''', (limit,))
+                
+                columns = [description[0] for description in cur.description]
+                tracks = []
+                
+                for row in cur.fetchall():
+                    track = dict(zip(columns, row))
+                    tracks.append(track)
+                
+                return tracks
+                
+        except Exception as e:
+            logger.error(f"Failed to get tracks needing analysis: {e}")
+            return []
     
     def close(self):
         """Close the database connection."""
