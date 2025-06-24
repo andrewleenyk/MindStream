@@ -183,3 +183,6 @@ dmypy.json
 
 # Temporary audio files for analysis
 temp_audio/
+
+# Mozart reference directory (separate git repo)
+temp_mozart/

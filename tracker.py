@@ -7,7 +7,7 @@ A single Python script that:
 - Polls /me/player/currently-playing every 5 seconds
 - Uses latest valid token for all API calls
 - Logs track info to console
-- Downloads and analyzes audio features for new tracks
+- Downloads and analyzes audio features for new tracks using Mozart enhanced analyzer
 """
 
 import time
@@ -21,7 +21,12 @@ from typing import Optional, Dict, Any
 from auth import token_manager, get_spotify_headers
 from tracker.spotify_api import SpotifyAPIClient
 from supabase_database import SupabaseDatabase
-from audio_analyzer import AudioAnalyzer
+
+# Import the new Mozart enhanced analyzer
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+from audio.analyzer import AudioAnalyzer
 
 class SpotifyTracker:
     """Continuous Spotify tracking with automatic token refresh and enhanced audio analysis."""
@@ -29,7 +34,31 @@ class SpotifyTracker:
     def __init__(self):
         self.client = SpotifyAPIClient()
         self.database = SupabaseDatabase()
-        self.audio_analyzer = AudioAnalyzer(max_concurrent=2, max_retries=3)
+        
+        # Initialize the Mozart enhanced audio analyzer
+        try:
+            from src.core.config import Config
+            config = Config()
+        except ImportError:
+            # Fallback config if core config is not available
+            class FallbackConfig:
+                def get(self, section, key, default=None):
+                    if section == 'audio' and key == 'temp_directory':
+                        return 'temp_audio'
+                    elif section == 'audio' and key == 'max_retries':
+                        return 3
+                    elif section == 'audio' and key == 'max_duration':
+                        return 600
+                    elif section == 'audio' and key == 'min_duration':
+                        return 1.0
+                    elif section == 'audio' and key == 'min_sample_rate':
+                        return 8000
+                    elif section == 'audio' and key == 'max_sample_rate':
+                        return 48000
+                    return default
+            config = FallbackConfig()
+        
+        self.audio_analyzer = AudioAnalyzer(config)
         self.running = False
         self.last_track_id = None
         self.analysis_futures = {}  # Track analysis futures
@@ -122,45 +151,70 @@ class SpotifyTracker:
                 import json
                 print(json.dumps(data_summary, indent=2))
                 
-                # Save to database
-                if self.database.save_track_data(comprehensive_data):
-                    print(f"💾 Saved to database")
-                    
-                    # Perform audio analysis for new tracks
-                    if (current_track_id and 
-                        current_track_id not in self.analysis_futures and
-                        comprehensive_data.get('track_name') and 
-                        comprehensive_data.get('primary_artist')):
-                        
-                        print(f"[{timestamp}] 🎵 Starting audio analysis...")
-                        
-                        # Submit analysis task to thread pool
-                        track_name = comprehensive_data.get('track_name')
-                        artist_name = comprehensive_data.get('primary_artist')
-                        
-                        future = self.audio_analyzer.submit_analysis_task(
-                            track_name, 
-                            artist_name, 
-                            current_track_id,
-                            self._update_analysis_status
-                        )
-                        
-                        if future:
-                            # Track the future for cleanup
-                            self.analysis_futures[current_track_id] = future
-                            print(f"[{timestamp}] 📊 Analysis task submitted (active tasks: {self.audio_analyzer.get_active_tasks_count()})")
+                # Check if analysis already exists BEFORE saving to database
+                if self.database.has_completed_analysis(current_track_id):
+                    print(f"[{timestamp}] ✅ Analysis already exists for this track, skipping analysis.")
+                    # Save track data once if it doesn't exist yet
+                    if not self.database.track_exists(current_track_id):
+                        if self.database.save_track_data(comprehensive_data):
+                            print(f"💾 Saved to database (analysis skipped)")
                         else:
-                            print(f"[{timestamp}] ℹ️  Track already analyzed or analysis skipped")
-                        
+                            print(f"❌ Failed to save to database")
+                    else:
+                        print(f"💾 Track already exists in database, using existing analysis")
+                    
+                    # Fetch existing analysis data and update current entry
+                    existing_analysis = self.database.get_existing_analysis_data(current_track_id)
+                    if existing_analysis:
+                        if self.database.update_current_entry_with_existing_analysis(current_track_id, existing_analysis):
+                            print(f"[{timestamp}] 📊 Populated current entry with existing analysis data")
+                        else:
+                            print(f"[{timestamp}] ⚠️  Could not update current entry with analysis data")
+                    else:
+                        print(f"[{timestamp}] ⚠️  No existing analysis data found")
+                    
+                    return
+                
+                # Save to database only if track doesn't exist yet
+                if not self.database.track_exists(current_track_id):
+                    if self.database.save_track_data(comprehensive_data):
+                        print(f"💾 Saved to database")
+                    else:
+                        print(f"❌ Failed to save to database")
+                        return
                 else:
-                    print(f"❌ Failed to save to database")
+                    print(f"💾 Track already exists in database")
+                
+                # Perform audio analysis for new tracks
+                if (current_track_id and 
+                    current_track_id not in self.analysis_futures and
+                    comprehensive_data.get('track_name') and 
+                    comprehensive_data.get('primary_artist')):
+                    
+                    print(f"[{timestamp}] 🎵 Starting audio analysis...")
+                    
+                    # Submit analysis task to thread pool
+                    track_name = comprehensive_data.get('track_name')
+                    artist_name = comprehensive_data.get('primary_artist')
+                    
+                    future = self.audio_analyzer.submit_analysis_task(
+                        track_name, 
+                        artist_name, 
+                        current_track_id,
+                        self._update_analysis_status
+                    )
+                    
+                    if future:
+                        # Track the future for cleanup
+                        self.analysis_futures[current_track_id] = future
+                        print(f"[{timestamp}] 📊 Analysis task submitted (active tasks: {self.audio_analyzer.get_active_tasks_count()})")
+                    else:
+                        print(f"[{timestamp}] ℹ️  Track already analyzed or analysis skipped")
+                
             else:
                 print(f"[{timestamp}] ℹ️  No data available")
             
             self.last_track_id = current_track_id
-            
-            # Clean up completed futures
-            self._cleanup_completed_futures()
     
     def _update_analysis_status(self, track_id: str, status: str):
         """Callback to update analysis status in database."""
@@ -174,15 +228,21 @@ class SpotifyTracker:
         """Clean up completed analysis futures and update database with results."""
         completed_futures = []
         
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔍 Checking {len(self.analysis_futures)} analysis futures...")
+        
         for track_id, future in self.analysis_futures.items():
             if future and future.done():
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Future completed for {track_id}")
                 try:
                     features = future.result(timeout=1)
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔍 Future result for {track_id}: {features is not None}")
                     
                     if features:
                         print(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Features extracted: {list(features.keys())}")
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Sample feature values: tempo={features.get('tempo')}, energy={features.get('energy')}")
+                        
                         # Update database with audio features
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] 💾 Attempting to save features to database for {track_id}...")
                         if self.database.update_track_audio_analysis(track_id, features):
                             print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Audio features saved to database for {track_id}")
                         else:
@@ -192,12 +252,15 @@ class SpotifyTracker:
                         
                 except Exception as e:
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Analysis future error for {track_id}: {e}")
+                    import traceback
+                    traceback.print_exc()
                 
                 completed_futures.append(track_id)
         
         # Remove completed futures
         for track_id in completed_futures:
             del self.analysis_futures[track_id]
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 🧹 Removed completed future for {track_id}")
     
     def start_tracking(self):
         """Start the continuous tracking process."""
@@ -242,6 +305,9 @@ class SpotifyTracker:
                     
                     # Log track information
                     self._log_track_change(track_data)
+                    
+                    # Clean up completed futures (run every 5 seconds)
+                    self._cleanup_completed_futures()
                     
                     # Wait 5 seconds before next poll
                     time.sleep(5)

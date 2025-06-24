@@ -17,6 +17,8 @@ class SupabaseDatabase:
         """Initialize the database connection."""
         self.conn = None
         self.connect()
+        # Ensure enhanced Mozart feature columns exist
+        self.ensure_enhanced_features_columns()
     
     def connect(self):
         """Establish connection to Supabase PostgreSQL database."""
@@ -50,16 +52,15 @@ class SupabaseDatabase:
                 self.connect()
             
             with self.conn.cursor() as cur:
-                # Insert main track data
+                # Insert main track data (removed unused columns)
                 cur.execute('''
                     INSERT INTO tracks (
                         timestamp, track_id, track_name, primary_artist, artists,
                         is_playing, progress_ms, duration_ms, album_name, album_id,
                         popularity, explicit, track_number, disc_number, release_date, album_type,
-                        tempo, beat_strength, rhythmic_stability, regularity, valence, key, mode,
-                        energy, loudness, instrumentalness, acousticness, speechiness, danceability,
-                        analysis_status
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        tempo, valence, key, mode, energy, loudness, instrumentalness, 
+                        acousticness, speechiness, danceability, analysis_status
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ''', (
                     track_data.get('timestamp'),
                     track_data.get('track_id'),
@@ -78,9 +79,6 @@ class SupabaseDatabase:
                     track_data.get('release_date'),
                     track_data.get('album_type'),
                     track_data.get('tempo'),
-                    track_data.get('beat_strength'),
-                    track_data.get('rhythmic_stability'),
-                    track_data.get('regularity'),
                     track_data.get('valence'),
                     track_data.get('key'),
                     track_data.get('mode'),
@@ -103,6 +101,7 @@ class SupabaseDatabase:
     def update_track_audio_analysis(self, track_id: str, audio_features: Dict[str, Any]) -> bool:
         """
         Update an existing track record with audio analysis data.
+        Now supports enhanced Mozart features including confidence scores.
         
         Args:
             track_id: Spotify track ID
@@ -116,31 +115,66 @@ class SupabaseDatabase:
                 self.connect()
             
             with self.conn.cursor() as cur:
-                cur.execute('''
-                    UPDATE tracks 
-                    SET tempo = %s, beat_strength = %s, rhythmic_stability = %s, 
-                        regularity = %s, valence = %s, key = %s, mode = %s,
-                        energy = %s, loudness = %s, instrumentalness = %s, acousticness = %s, speechiness = %s, danceability = %s
-                    WHERE track_id = %s
-                ''', (
-                    audio_features.get('tempo'),
-                    audio_features.get('beat_strength'),
-                    audio_features.get('rhythmic_stability'),
-                    audio_features.get('regularity'),
-                    audio_features.get('valence'),
-                    audio_features.get('key'),
-                    audio_features.get('mode'),
-                    audio_features.get('energy'),
-                    audio_features.get('loudness'),
-                    audio_features.get('instrumentalness'),
-                    audio_features.get('acousticness'),
-                    audio_features.get('speechiness'),
-                    audio_features.get('danceability'),
-                    track_id
-                ))
+                # Check if we have enhanced Mozart features
+                has_enhanced_features = any(key.endswith('_confidence') for key in audio_features.keys())
+                
+                if has_enhanced_features:
+                    # Use enhanced Mozart features
+                    cur.execute('''
+                        UPDATE tracks 
+                        SET tempo = %s, valence = %s, danceability = %s, instrumentalness = %s, 
+                            acousticness = %s, speechiness = %s, key = %s, mode = %s,
+                            energy = %s, loudness = %s,
+                            valence_confidence = %s, danceability_confidence = %s, 
+                            instrumentalness_confidence = %s, acousticness_confidence = %s, 
+                            speechiness_confidence = %s,
+                            analysis_status = %s
+                        WHERE track_id = %s
+                    ''', (
+                        audio_features.get('tempo'),
+                        audio_features.get('valence'),
+                        audio_features.get('danceability'),
+                        audio_features.get('instrumentalness'),
+                        audio_features.get('acousticness'),
+                        audio_features.get('speechiness'),
+                        audio_features.get('key'),
+                        audio_features.get('mode'),
+                        audio_features.get('energy'),
+                        audio_features.get('loudness'),
+                        audio_features.get('valence_confidence'),
+                        audio_features.get('danceability_confidence'),
+                        audio_features.get('instrumentalness_confidence'),
+                        audio_features.get('acousticness_confidence'),
+                        audio_features.get('speechiness_confidence'),
+                        'completed',  # Set analysis status to completed
+                        track_id
+                    ))
+                else:
+                    # Use basic features (backward compatibility)
+                    cur.execute('''
+                        UPDATE tracks 
+                        SET tempo = %s, valence = %s, key = %s, mode = %s,
+                            energy = %s, loudness = %s, instrumentalness = %s, acousticness = %s, speechiness = %s, danceability = %s,
+                            analysis_status = %s
+                        WHERE track_id = %s
+                    ''', (
+                        audio_features.get('tempo'),
+                        audio_features.get('valence'),
+                        audio_features.get('key'),
+                        audio_features.get('mode'),
+                        audio_features.get('energy'),
+                        audio_features.get('loudness'),
+                        audio_features.get('instrumentalness'),
+                        audio_features.get('acousticness'),
+                        audio_features.get('speechiness'),
+                        audio_features.get('danceability'),
+                        'completed',  # Set analysis status to completed
+                        track_id
+                    ))
                 
                 if cur.rowcount > 0:
-                    logger.info(f"Updated audio analysis for track {track_id}")
+                    feature_type = "enhanced Mozart" if has_enhanced_features else "basic"
+                    logger.info(f"Updated {feature_type} audio analysis for track {track_id}")
                     return True
                 else:
                     logger.warning(f"No track found with ID {track_id} to update")
@@ -314,11 +348,170 @@ class SupabaseDatabase:
             logger.error(f"Failed to get tracks needing analysis: {e}")
             return []
     
+    def has_completed_analysis(self, track_id: str) -> bool:
+        """Return True if the track has completed analysis in the database."""
+        try:
+            if not self.conn or self.conn.closed:
+                self.connect()
+            with self.conn.cursor() as cur:
+                # Check for completed status OR tracks with analysis data (tempo is not null)
+                cur.execute('''
+                    SELECT 1 FROM tracks 
+                    WHERE track_id = %s 
+                    AND (analysis_status = 'completed' OR tempo IS NOT NULL)
+                    LIMIT 1
+                ''', (track_id,))
+                return cur.fetchone() is not None
+        except Exception as e:
+            print(f"❌ Error checking analysis status: {e}")
+            return False
+    
+    def track_exists(self, track_id: str) -> bool:
+        """Return True if the track exists in the database at all."""
+        try:
+            if not self.conn or self.conn.closed:
+                self.connect()
+            with self.conn.cursor() as cur:
+                cur.execute('''
+                    SELECT 1 FROM tracks 
+                    WHERE track_id = %s 
+                    LIMIT 1
+                ''', (track_id,))
+                return cur.fetchone() is not None
+        except Exception as e:
+            print(f"❌ Error checking if track exists: {e}")
+            return False
+    
     def close(self):
         """Close the database connection."""
         if self.conn and not self.conn.closed:
             self.conn.close()
             logger.info("Database connection closed")
+    
+    def get_existing_analysis_data(self, track_id: str) -> Dict[str, Any]:
+        """Get existing analysis data for a track from any previous occurrence."""
+        try:
+            if not self.conn or self.conn.closed:
+                self.connect()
+            with self.conn.cursor() as cur:
+                cur.execute('''
+                    SELECT tempo, beat_strength, rhythmic_stability, regularity, 
+                           valence, key, mode, energy, loudness, instrumentalness, 
+                           acousticness, speechiness, danceability
+                    FROM tracks 
+                    WHERE track_id = %s 
+                    AND (analysis_status = 'completed' OR tempo IS NOT NULL)
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                ''', (track_id,))
+                
+                row = cur.fetchone()
+                if row:
+                    columns = ['tempo', 'beat_strength', 'rhythmic_stability', 'regularity', 
+                              'valence', 'key', 'mode', 'energy', 'loudness', 'instrumentalness', 
+                              'acousticness', 'speechiness', 'danceability']
+                    return dict(zip(columns, row))
+                return {}
+        except Exception as e:
+            print(f"❌ Error fetching existing analysis data: {e}")
+            return {}
+    
+    def update_current_entry_with_existing_analysis(self, track_id: str, analysis_data: Dict[str, Any]) -> bool:
+        """Update the most recent track entry with existing analysis data."""
+        try:
+            if not self.conn or self.conn.closed:
+                self.connect()
+            
+            with self.conn.cursor() as cur:
+                # Update the most recent entry for this track
+                cur.execute('''
+                    UPDATE tracks 
+                    SET tempo = %s, beat_strength = %s, rhythmic_stability = %s, 
+                        regularity = %s, valence = %s, key = %s, mode = %s,
+                        energy = %s, loudness = %s, instrumentalness = %s, acousticness = %s, speechiness = %s, danceability = %s,
+                        analysis_status = %s
+                    WHERE track_id = %s 
+                    AND timestamp = (
+                        SELECT MAX(timestamp) 
+                        FROM tracks 
+                        WHERE track_id = %s
+                    )
+                ''', (
+                    analysis_data.get('tempo'),
+                    analysis_data.get('beat_strength'),
+                    analysis_data.get('rhythmic_stability'),
+                    analysis_data.get('regularity'),
+                    analysis_data.get('valence'),
+                    analysis_data.get('key'),
+                    analysis_data.get('mode'),
+                    analysis_data.get('energy'),
+                    analysis_data.get('loudness'),
+                    analysis_data.get('instrumentalness'),
+                    analysis_data.get('acousticness'),
+                    analysis_data.get('speechiness'),
+                    analysis_data.get('danceability'),
+                    'completed',
+                    track_id,
+                    track_id
+                ))
+                
+                if cur.rowcount > 0:
+                    print(f"✅ Updated current entry with existing analysis data for {track_id}")
+                    return True
+                else:
+                    print(f"❌ No current entry found to update for {track_id}")
+                    return False
+                
+        except Exception as e:
+            print(f"❌ Error updating current entry with analysis: {e}")
+            return False
+    
+    def ensure_enhanced_features_columns(self):
+        """
+        Ensure the database table has the enhanced Mozart feature columns.
+        Adds confidence columns if they don't exist.
+        """
+        try:
+            if not self.conn or self.conn.closed:
+                self.connect()
+            
+            with self.conn.cursor() as cur:
+                # Check if confidence columns exist
+                cur.execute("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'tracks' 
+                    AND column_name IN ('valence_confidence', 'danceability_confidence', 'instrumentalness_confidence', 'acousticness_confidence', 'speechiness_confidence')
+                """)
+                
+                existing_columns = [row[0] for row in cur.fetchall()]
+                missing_columns = []
+                
+                required_columns = [
+                    'valence_confidence',
+                    'danceability_confidence', 
+                    'instrumentalness_confidence',
+                    'acousticness_confidence',
+                    'speechiness_confidence'
+                ]
+                
+                for col in required_columns:
+                    if col not in existing_columns:
+                        missing_columns.append(col)
+                
+                # Add missing columns
+                for col in missing_columns:
+                    cur.execute(f"ALTER TABLE tracks ADD COLUMN {col} FLOAT")
+                    logger.info(f"Added column {col} to tracks table")
+                
+                if missing_columns:
+                    logger.info(f"Enhanced Mozart feature columns added: {missing_columns}")
+                else:
+                    logger.info("All enhanced Mozart feature columns already exist")
+                    
+        except Exception as e:
+            logger.error(f"Failed to ensure enhanced features columns: {e}")
+            # Don't raise - this is not critical for basic functionality
 
 if __name__ == "__main__":
     # Test the Supabase connection
