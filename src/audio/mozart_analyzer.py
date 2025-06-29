@@ -334,80 +334,66 @@ class MozartAudioAnalyzer:
     
     def extract_all_features(self, audio_file_path: str) -> Optional[Dict[str, Any]]:
         """
-        Extract all enhanced features from an audio file.
-        
-        Args:
-            audio_file_path: Path to audio file
-            
-        Returns:
-            Dictionary containing all extracted features
+        Extract the 10 enhanced features (and their confidence scores) plus key, mode, energy, and loudness using the Mozart repo logic.
         """
         try:
             # Load audio
             audio, sr = self.load_audio(audio_file_path)
             if audio is None:
                 return None
-            
-            # Extract enhanced features
+
+            # Extract enhanced features using Mozart logic
             valence, valence_conf = self.extract_enhanced_valence(audio)
             danceability, dance_conf = self.extract_enhanced_danceability(audio)
             instrumentalness, inst_conf = self.extract_enhanced_instrumentalness(audio)
             acousticness, acous_conf = self.extract_enhanced_acousticness(audio)
             speechiness, speech_conf = self.extract_enhanced_speechiness(audio)
-            
-            # Extract basic features for compatibility
-            tempo, _ = librosa.beat.beat_track(y=audio, sr=self.sample_rate)
-            
-            # Key and mode detection
-            chroma = librosa.feature.chroma_cqt(y=audio, sr=self.sample_rate)
+
+            # Key and mode detection (using chroma)
+            chroma = librosa.feature.chroma_cqt(y=audio, sr=sr)
+
             try:
+                # For newer versions of librosa
                 key_raw, mode_raw = librosa.feature.key_mode(chroma)
             except AttributeError:
-                chroma_sum = np.sum(chroma, axis=1)
-                key_raw = np.argmax(chroma_sum)
-                mode_raw = 0
-            
+                # Fallback for older versions
+                try:
+                    chroma_sum = np.sum(chroma, axis=1)
+                    key_raw = np.argmax(chroma_sum)
+                    mode_raw = 0  # Default to major
+                except:
+                    key_raw = 0
+                    mode_raw = 0
+
+            # Convert to strings
             key_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
             mode_names = ['major', 'minor']
+
             key = key_names[key_raw] if key_raw < len(key_names) else 'Unknown'
             mode = mode_names[mode_raw] if mode_raw < len(mode_names) else 'Unknown'
-            
+
             # Energy and loudness
             rms = librosa.feature.rms(y=audio)[0]
             energy = float(np.mean(rms))
             loudness = float(np.mean(librosa.amplitude_to_db(rms, ref=np.max)))
-            
-            # Compile features
+
             features = {
-                'tempo': round(float(tempo), 2),
-                'valence': round(valence, 2),
-                'danceability': round(danceability, 2),
-                'instrumentalness': round(instrumentalness, 2),
-                'acousticness': round(acousticness, 2),
-                'speechiness': round(speechiness, 2),
+                'valence': float(valence),
+                'valence_confidence': float(valence_conf),
+                'danceability': float(danceability),
+                'danceability_confidence': float(dance_conf),
+                'instrumentalness': float(instrumentalness),
+                'instrumentalness_confidence': float(inst_conf),
+                'acousticness': float(acousticness),
+                'acousticness_confidence': float(acous_conf),
+                'speechiness': float(speechiness),
+                'speechiness_confidence': float(speech_conf),
                 'key': key,
                 'mode': mode,
-                'energy': round(energy, 2),
-                'loudness': round(loudness, 2),
-                # Confidence scores
-                'valence_confidence': round(valence_conf, 2),
-                'danceability_confidence': round(dance_conf, 2),
-                'instrumentalness_confidence': round(inst_conf, 2),
-                'acousticness_confidence': round(acous_conf, 2),
-                'speechiness_confidence': round(speech_conf, 2)
+                'energy': energy,
+                'loudness': loudness
             }
-            
-            logger.info(f"Mozart analysis completed: {features}")
-            
-            # Console output for debugging
-            print(f"\n🎵 MOZART ANALYSIS RESULTS:")
-            for k, v in features.items():
-                print(f"   {k}: {v}")
-            print(f"   File: {audio_file_path}")
-            print(f"   Sample Rate: {sr}Hz\n")
-            
             return features
-            
         except Exception as e:
             logger.error(f"Failed to extract Mozart features: {e}")
             import traceback
